@@ -1,6 +1,6 @@
 {
   "schema": "forge-line.telemetry/v1",
-  "index_updated_at": "2026-10-12T07:53:27Z",
+  "index_updated_at": "2026-10-12T17:15:05Z",
   "days": [
     {
       "date": "2026-10-03",
@@ -952,8 +952,8 @@
     },
     {
       "date": "2026-10-12",
-      "polls": 2,
-      "vehicle_records": 71,
+      "polls": 3,
+      "vehicle_records": 223,
       "path": "data/2026-10-12.jsonl"
     },
     {
@@ -1000,9 +1000,69 @@
     },
     {
       "date": "2026-10-12T07",
-      "polls": 11,
-      "vehicle_records": 203,
+      "polls": 12,
+      "vehicle_records": 218,
       "path": "data/2026-10-12T07.jsonl"
+    },
+    {
+      "date": "2026-10-12T08",
+      "polls": 12,
+      "vehicle_records": 414,
+      "path": "data/2026-10-12T08.jsonl"
+    },
+    {
+      "date": "2026-10-12T09",
+      "polls": 12,
+      "vehicle_records": 1056,
+      "path": "data/2026-10-12T09.jsonl"
+    },
+    {
+      "date": "2026-10-12T10",
+      "polls": 12,
+      "vehicle_records": 1886,
+      "path": "data/2026-10-12T10.jsonl"
+    },
+    {
+      "date": "2026-10-12T11",
+      "polls": 12,
+      "vehicle_records": 2443,
+      "path": "data/2026-10-12T11.jsonl"
+    },
+    {
+      "date": "2026-10-12T12",
+      "polls": 12,
+      "vehicle_records": 2493,
+      "path": "data/2026-10-12T12.jsonl"
+    },
+    {
+      "date": "2026-10-12T13",
+      "polls": 12,
+      "vehicle_records": 2274,
+      "path": "data/2026-10-12T13.jsonl"
+    },
+    {
+      "date": "2026-10-12T14",
+      "polls": 12,
+      "vehicle_records": 2022,
+      "path": "data/2026-10-12T14.jsonl"
+    },
+    {
+      "date": "2026-10-12T15",
+      "polls": 12,
+      "vehicle_records": 2007,
+      "path": "data/2026-10-12T15.jsonl"
+    },
+    {
+      "date": "2026-10-12T16",
+      "polls": 12,
+      "vehicle_records": 2025,
+      "path": "data/2026-10-12T16.jsonl"
+    },
+    {
+      "date": "2026-10-12T17",
+      "polls": 3,
+      "vehicle_records": 434,
+      "path": "data/2026-10-12T17.jsonl"
     }
   ]
 }

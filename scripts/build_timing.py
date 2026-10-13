@@ -4,7 +4,10 @@
 Reads data/*.jsonl (telemetry/v1 poll records), runs the per-vehicle segment
 detector defined in PROTOCOL.md, and writes:
 
-  data/vehicles/events.jsonl   - endpoint/v1 event stream (append-only)
+  data/vehicles/events-*.jsonl - endpoint/v1 event stream (append-only,
+                                 monthly shards rolled at PART_BYTES; the
+                                 legacy events.jsonl monolith is split into
+                                 shards by rotate_events() when oversized)
   data/timing/segments.json    - aggregated empirical timing model
   data/timing/watermark.json   - incremental processing state
 
@@ -33,6 +36,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 REF = ROOT / "reference" / "route-stops.json"
 EVENTS = DATA / "vehicles" / "events.jsonl"
+EVENTS_DIR = DATA / "vehicles"
+EVENTS_MONOLITH = EVENTS
+# GitHub rejects any file >= 100 MB. The event stream grows without bound,
+# so it lives in monthly shard parts kept well under that limit.
+ROTATE_BYTES = 50 * 1024 * 1024   # split the monolith above this size
+PART_BYTES = 40 * 1024 * 1024     # roll to a new shard part above this size
 SEGMENTS = DATA / "timing" / "segments.json"
 WATERMARK = DATA / "timing" / "watermark.json"
 
@@ -93,6 +102,126 @@ def nearest_stop(lat, lon, stops):
     return best, best_d
 
 
+def shard_sort_key(path):
+    """events-YYYY-MM.jsonl is part 1; events-YYYY-MM-NN.jsonl is part NN."""
+    stem = path.name[len("events-"):-len(".jsonl")]
+    parts = stem.split("-")
+    if len(parts) >= 4:
+        return ("-".join(parts[:3]), int(parts[3]))
+    return (stem, 1)
+
+
+def event_files():
+    """All event-stream files in stream order: the legacy monolith first
+    (whenever it exists it holds the oldest events), then monthly shards
+    in (month, part) order."""
+    files = []
+    if EVENTS_MONOLITH.exists():
+        files.append(EVENTS_MONOLITH)
+    shards = [p for p in EVENTS_DIR.glob("events-*.jsonl")
+              if p != EVENTS_MONOLITH]
+    files.extend(sorted(shards, key=shard_sort_key))
+    return files
+
+
+def record_month(line):
+    """YYYY-MM bucket for an event record, from its recorded_at stamp."""
+    try:
+        rec = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    for field in ("recorded_at", "source_poll", "received_at"):
+        ts = rec.get(field) or ""
+        if len(ts) >= 7 and ts[4] == "-":
+            return ts[:7]
+    return None
+
+
+def _part_path(month, part):
+    if part <= 1:
+        return EVENTS_DIR / f"events-{month}.jsonl"
+    return EVENTS_DIR / f"events-{month}-{part:02d}.jsonl"
+
+
+def rotate_events():
+    """Split an oversized events.jsonl monolith into monthly shard parts.
+
+    Lossless and order-preserving: lines are streamed in file order into
+    events-YYYY-MM.jsonl, events-YYYY-MM-02.jsonl, ..., rolling to the
+    next part before any part exceeds PART_BYTES. A record whose month
+    cannot be determined stays in the current part. The monolith is
+    removed only after every line has been written to a shard.
+    """
+    if not EVENTS_MONOLITH.exists():
+        return
+    if EVENTS_MONOLITH.stat().st_size <= ROTATE_BYTES:
+        return
+    handles = {}
+    state = {"month": None, "part": 0, "path": None, "size": 0}
+
+    def open_part(month, part):
+        path = _part_path(month, part)
+        if path not in handles:
+            handles[path] = open(path, "a")
+        state.update(month=month, part=part, path=path,
+                     size=path.stat().st_size)
+        return handles[path]
+
+    def resume_part(month):
+        # continue this month's last existing part (shards may already
+        # exist next to a regrown monolith)
+        part = 1
+        while _part_path(month, part + 1).exists():
+            part += 1
+        return open_part(month, part)
+
+    try:
+        with open(EVENTS_MONOLITH) as src:
+            for line in src:
+                if not line.strip():
+                    continue
+                month = record_month(line) or state["month"] or "unknown"
+                need = len(line.encode())
+                if state["path"] is None or month != state["month"]:
+                    resume_part(month)
+                elif state["size"] + need > PART_BYTES:
+                    open_part(month, state["part"] + 1)
+                handles[state["path"]].write(line)
+                state["size"] += need
+    finally:
+        for fh in handles.values():
+            fh.close()
+    EVENTS_MONOLITH.unlink()
+
+
+class EventWriter:
+    """Append handle for the event stream: writes to the current month's
+    latest shard part, rolling to a new part before PART_BYTES."""
+
+    def __init__(self, month):
+        self.month = month
+        self.part = 1
+        while _part_path(month, self.part + 1).exists():
+            self.part += 1
+        self.path = _part_path(month, self.part)
+        self.size = self.path.stat().st_size if self.path.exists() else 0
+        self.fh = open(self.path, "a")
+
+    def write(self, s):
+        need = len(s.encode())
+        if self.size > 0 and self.size + need > PART_BYTES:
+            self.fh.close()
+            self.part += 1
+            self.path = _part_path(self.month, self.part)
+            self.size = 0
+            self.fh = open(self.path, "a")
+        self.fh.write(s)
+        self.size += need
+
+    def close(self):
+        self.fh.close()
+
+
 def write_latest():
     """data/latest.json: the single most recent poll, for instant page paint
     and as a lightweight "last known positions" fallback. Rebuilt from the
@@ -130,7 +259,9 @@ def main():
 
     EVENTS.parent.mkdir(parents=True, exist_ok=True)
     SEGMENTS.parent.mkdir(parents=True, exist_ok=True)
-    evf = open(EVENTS, "a")
+    rotate_events()
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    evf = EventWriter(now_utc[:7])
 
     def emit(event, vid, route, recorded_at, polled_at, **fields):
         emit.seq += 1
@@ -142,7 +273,6 @@ def main():
         evf.write(json.dumps(rec, separators=(",", ":")) + "\n")
     emit.seq = 0
 
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_events = 0
 
     for dayfile in sorted(DATA.glob("*.jsonl")):
@@ -338,8 +468,8 @@ def main():
     # timing model: aggregate segment.traversed events
     cells = defaultdict(list)
     dists = {}
-    try:
-        with open(EVENTS) as f:
+    for events_path in event_files():
+        with open(events_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -354,8 +484,6 @@ def main():
                 cells[key].append(e["seconds"])
                 if e.get("distance_m"):
                     dists[key] = e["distance_m"]
-    except FileNotFoundError:
-        pass
 
     model = {}
     for (route, fs, ts, b), vals in cells.items():

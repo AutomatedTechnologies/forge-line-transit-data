@@ -41,6 +41,17 @@ ghost-route path, exactly as SMART vehicles did -- the timing
 reference is DDOT-only, so they produce enrollment/quiet events and
 no timing cells.
 
+Display-only exclusion (added 2026-10-15): agency "smart" is fed by
+Swiftly under the Swiftly API License Agreement; per §4(vi) and the
+licensee's display-only decision, Swiftly Content may be rendered in
+the Live Transit application but must never be redistributed -- and
+this repository is a public archive. ARCHIVE_AGENCY_DENYLIST is
+therefore applied to every ingested vehicle record regardless of
+which source file it arrived in, so no future combined or renamed
+feed file can leak SMART records into the shards or latest outputs.
+The trimmed sources.smart state (ok/reason only, carrying no vehicle
+data) continues to be recorded exactly as before.
+
 Output signalling: writes logged=true/false, shard=<repo-relative
 path>, and record_id=<generated_at> to $GITHUB_OUTPUT when present.
 Exit code is 0 for every expected skip; a genuine bug should traceback
@@ -60,6 +71,11 @@ SCHEMA = "forge-line.telemetry/v1"
 SOURCE_HOST = "detroitautomationacademy.com/live-data"
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
+
+# Agencies whose vehicle records must never enter this public archive
+# (display-only license terms; see the module docstring). Structural:
+# applied at ingestion to every record, whatever file carried it.
+ARCHIVE_AGENCY_DENYLIST = frozenset({"smart"})
 
 
 def emit_output(name, value):
@@ -161,6 +177,13 @@ def main():
         print("log-static: payload missing generated_at/vehicles; not logging (gap)")
         emit_output("logged", "false")
         return 0
+
+    # Display-only exclusion, before any counting or cleaning: a
+    # denylisted agency's records contribute nothing to the archive --
+    # not to the vehicle list, and not even to the per-agency counts
+    # the trimmed source states report.
+    vehicles_in = [v for v in vehicles_in
+                   if str(v.get("agency") or "ddot") not in ARCHIVE_AGENCY_DENYLIST]
 
     raw_sources = payload.get("sources") or {}
     counts = {}

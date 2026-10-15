@@ -1,0 +1,79 @@
+name: Log telemetry (static feed)
+
+# Primary telemetry logger since the 2026-10-15 repoint. The Netlify
+# scheduled function that used to append the 5-min polls died with the
+# quota-paused proxy site (last record 2026-10-15T19:20:17.803Z). This
+# workflow polls the static feed the page itself consumes
+# (live-data/vehicles.json, built by the site repo's Actions workflow)
+# via scripts/log_static.py and appends one telemetry/v1 record per
+# new snapshot to the current UTC-hour shard.
+#
+# After committing it dispatches the timing build explicitly:
+# GITHUB_TOKEN pushes do not trigger other workflows (recursion
+# guard), so build-timing.yml's push trigger cannot fire from here.
+# workflow_dispatch is exempt from the guard.
+#
+# Cadence: the */5 request rides GitHub's best-effort scheduler, the
+# same caveat the feed workflow carries. Snapshot timestamps come from
+# the feed file's generated_at, so scheduler sparsity presents as
+# older snapshots in the stream, never as fabricated polls.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: log-telemetry
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Poll static feed and append telemetry record
+        id: poll
+        run: python scripts/log_static.py
+
+      - name: Commit shard append
+        if: steps.poll.outputs.logged == 'true'
+        run: |
+          git config user.name 'forge-line-logger'
+          git config user.email 'forge-line-logger@users.noreply.github.com'
+          git add '${{ steps.poll.outputs.shard }}'
+          git commit -m 'telemetry: static-feed 5-min log ${{ steps.poll.outputs.record_id }}'
+          # A timing build may push while this runs; rebase onto the
+          # new tip before pushing (build-timing.yml uses the same
+          # pattern). Processing downstream is watermark-idempotent.
+          # On a rebase conflict, fail loud: the next run re-polls --
+          # the dedup guard skips only snapshots that actually landed.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if ! git rebase origin/main; then
+              echo "rebase conflict (attempt $attempt)" >&2
+              git rebase --abort
+              exit 1
+            fi
+            if git push origin HEAD:main; then
+              echo "pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push raced (attempt $attempt); retrying"
+          done
+          echo 'failed to push after 3 attempts' >&2
+          exit 1
+
+      - name: Dispatch timing build
+        if: steps.poll.outputs.logged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run build-timing.yml --ref main

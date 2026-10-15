@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Poll the Forge Line live proxy and append one standardized telemetry record.
+"""Poll the Forge Line live feed and append one standardized telemetry record.
+
+Repointed 2026-10-15: this fallback poller used to fetch the Netlify
+proxy's /api/vehicles. The proxy site is quota-paused and the page's
+feed is now the static JSON at FEED_URL (same envelope), so the
+fallback polls that. scripts/log_static.py is the primary logger;
+this script remains the build-timing workflow's schedule-path
+fallback, as before.
 
 Output: data/YYYY-MM-DD.jsonl (UTC date), one JSON object per line, one line
 per successful poll. Failed polls are never logged as empty records -- a gap
@@ -21,7 +28,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROXY = "https://forge-line-live-proxy.netlify.app"
+FEED_URL = "https://detroitautomationacademy.com/live-data/vehicles.json"
+SOURCE_HOST = "detroitautomationacademy.com/live-data"
 SCHEMA = "forge-line.telemetry/v1"
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -30,12 +38,12 @@ REGISTRY = DATA / "vehicles" / "registry.json"
 
 def fetch():
     req = urllib.request.Request(
-        PROXY + "/api/vehicles",
+        FEED_URL,
         headers={"User-Agent": "forge-line-transit-data-logger/1.0"},
     )
     with urllib.request.urlopen(req, timeout=25) as resp:
         if resp.status != 200:
-            raise RuntimeError(f"proxy HTTP {resp.status}")
+            raise RuntimeError(f"feed HTTP {resp.status}")
         return json.load(resp)
 
 
@@ -138,7 +146,7 @@ def main():
     payload = fetch()
     vehicles = payload.get("vehicles")
     if not isinstance(vehicles, list):
-        raise RuntimeError("proxy response missing 'vehicles' list")
+        raise RuntimeError("feed response missing 'vehicles' list")
     clean = [c for c in (clean_vehicle(v) for v in vehicles) if c]
 
     sources = {}
@@ -154,7 +162,7 @@ def main():
         "schema": SCHEMA,
         "record_id": stamp,
         "polled_at": stamp,
-        "proxy": "forge-line-live-proxy.netlify.app",
+        "proxy": SOURCE_HOST,
         "vehicle_count": len(clean),
         "vehicles": clean,
         "sources": sources,

@@ -18,6 +18,15 @@ watermark so event emission is idempotent.
 Honesty rules: traversals spanning a poll gap > 30 min are discarded (anchor
 reset, no event). Timing cells need >= 3 observations. Anomalies are flagged,
 never deleted.
+
+Dwell correction (added 2026-10-14, decision of record in the transit
+goal's DWELL-REFRESH.md): the segment detector measures anchor-hold time
+starting at a segment's from_stop, so layover dwell at a route terminus is
+inside the raw traversed seconds. At aggregation time only, cells whose
+from_stop is a terminus for the cell's route (or Rosa Parks Transit
+Center, stop 531) have that (route, from_stop) pair's median observed
+dwell subtracted from mean_s / p50_s / p90_s. Raw events are never
+altered; the correction lives only in the aggregated model.
 """
 import json
 import math
@@ -54,6 +63,58 @@ FROZEN_POLLS = 6           # identical rounded position this many polls -> froze
 OFF_ROUTE_M = 800.0
 QUIET_POLLS = 3            # missed polls before endpoint.quiet
 MIN_CELL_N = 3
+MIN_DWELL_N = 3            # dwell observations needed for a per-pair median
+MIN_SEGMENT_S = 30.0       # floor for dwell-corrected cell statistics
+ROSA_PARKS_STOP = "531"    # Rosa Parks Transit Center - Deboarding
+
+# Terminus stops per route, for the dwell correction. Derived from DDOT
+# GTFS feed S1000182 (the feed the production timetable and
+# reference/route-stops.json were built from): a stop is a terminus for a
+# route if it is the first or last stop of any trip of that route in
+# stop_times.txt. 98 distinct stops across 37 routes. Validated
+# 2026-10-14: with stop 531 counted for every route, this set reproduces
+# the origin-contamination measurements of record (2,121 cells, mean
+# 805.5 s vs 321.9 s for all other cells). Regenerate when the reference
+# feed changes.
+ROUTE_TERMINI = {
+    "1": {"531", "4080", "5225"},
+    "2": {"531", "2086", "3604", "3659", "5230"},
+    "3": {"152", "2261"},
+    "4": {"5666", "5675"},
+    "5": {"405", "531", "5248"},
+    "6": {"797", "3375", "5482"},
+    "7": {"6", "329"},
+    "8": {"9", "331", "3755"},
+    "9": {"425", "531", "3072"},
+    "10": {"1423", "2086", "2116", "3659"},
+    "11": {"69", "87", "1606"},
+    "12": {"687", "800", "5664"},
+    "13": {"405", "813", "814"},
+    "15": {"2", "70", "798", "3008", "3009"},
+    "16": {"6", "97", "447"},
+    "17": {"152", "330", "5047"},
+    "18": {"531", "1534", "1775", "5228"},
+    "19": {"531", "1818", "1839", "5218"},
+    "23": {"531", "5136", "5229"},
+    "27": {"531", "2515", "2538", "5222"},
+    "29": {"531", "1695", "5224"},
+    "30": {"2908", "5668"},
+    "31": {"531", "4279", "5226"},
+    "32": {"6", "505", "542", "4279"},
+    "38": {"509", "516", "541", "668", "1248", "3735", "3744"},
+    "39": {"2", "70", "283", "297"},
+    "40": {"304", "531", "5484"},
+    "41": {"2908", "4074", "4086", "4161", "4168"},
+    "42": {"2", "1128", "5259"},
+    "43": {"2", "70", "2515", "4188"},
+    "46": {"2086", "4471"},
+    "47": {"562", "1116", "1131", "1134", "2012", "4430", "4530"},
+    "52": {"531", "5219", "5319", "5352"},
+    "54": {"1588", "1589", "5663"},
+    "60": {"740", "741", "2086"},
+    "67": {"330", "531", "5223"},
+    "68": {"813", "814", "836", "2089"},
+}
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -468,6 +529,7 @@ def main():
     # timing model: aggregate segment.traversed events
     cells = defaultdict(list)
     dists = {}
+    dwell = defaultdict(list)   # (route_id, stop) -> [dwell_seconds]
     for events_path in event_files():
         with open(events_path) as f:
             for line in f:
@@ -478,12 +540,51 @@ def main():
                     e = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if e.get("event") == "dwell.observed":
+                    dwell[(str(e["route_id"]), str(e["stop"]))].append(
+                        float(e["dwell_seconds"]))
+                    continue
                 if e.get("event") != "segment.traversed":
                     continue
                 key = (e["route_id"], e["from_stop"], e["to_stop"], e["bucket"])
                 cells[key].append(e["seconds"])
                 if e.get("distance_m"):
                     dists[key] = e["distance_m"]
+
+    # Dwell correction (see module docstring). Pair medians need
+    # MIN_DWELL_N observations; the fallbacks are the pooled median at
+    # stop 531 and the pooled median over terminus/531 dwell, both
+    # computed from the same event stream (600 s and 590 s on the
+    # October 2026 stream at decision time).
+    def _median(vals):
+        s = sorted(vals)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    pair_dwell = {k: _median(v) for k, v in dwell.items()
+                  if len(v) >= MIN_DWELL_N}
+    term_pool = [d for (r, s), v in dwell.items()
+                 if s == ROSA_PARKS_STOP or s in ROUTE_TERMINI.get(r, ())
+                 for d in v]
+    pool_531 = [d for (r, s), v in dwell.items() if s == ROSA_PARKS_STOP
+                for d in v]
+    pooled_terminus_median = _median(term_pool) if term_pool else 600.0
+    pooled_531_median = (_median(pool_531) if pool_531
+                         else pooled_terminus_median)
+
+    def dwell_correction(route, from_stop):
+        """Median layover dwell (seconds) embedded in segment times that
+        start at from_stop, or None when from_stop is not an origin where
+        layover accrues (not a terminus for the route, not stop 531)."""
+        if (from_stop != ROSA_PARKS_STOP
+                and from_stop not in ROUTE_TERMINI.get(route, ())):
+            return None
+        med = pair_dwell.get((route, from_stop))
+        if med is not None:
+            return med
+        if from_stop == ROSA_PARKS_STOP:
+            return pooled_531_median
+        return pooled_terminus_median
 
     model = {}
     for (route, fs, ts, b), vals in cells.items():
@@ -493,13 +594,18 @@ def main():
         n = len(vals)
         p50 = vals[n // 2]
         p90 = vals[min(n - 1, int(n * 0.9))]
-        model[f"{route}|{fs}|{ts}|{b}"] = {
+        rec = {
             "n": n,
             "mean_s": round(sum(vals) / n, 1),
             "p50_s": round(p50, 1),
             "p90_s": round(p90, 1),
             "dist_m": dists.get((route, fs, ts, b)),
         }
+        corr = dwell_correction(route, fs)
+        if corr is not None:
+            for field in ("mean_s", "p50_s", "p90_s"):
+                rec[field] = round(max(rec[field] - corr, MIN_SEGMENT_S), 1)
+        model[f"{route}|{fs}|{ts}|{b}"] = rec
     with open(SEGMENTS, "w") as f:
         json.dump({"schema": SCHEMA,
                    "built_at": now_utc,

@@ -1,6 +1,6 @@
 {
   "schema": "forge-line.telemetry/v1",
-  "index_updated_at": "2026-11-02T11:58:23Z",
+  "index_updated_at": "2026-11-02T21:30:24Z",
   "days": [
     {
       "date": "2026-10-03",
@@ -4090,8 +4090,8 @@
     },
     {
       "date": "2026-11-02",
-      "polls": 2,
-      "vehicle_records": 182,
+      "polls": 3,
+      "vehicle_records": 358,
       "path": "data/2026-11-02.jsonl"
     },
     {
@@ -4162,9 +4162,69 @@
     },
     {
       "date": "2026-11-02T11",
-      "polls": 7,
-      "vehicle_records": 892,
+      "polls": 9,
+      "vehicle_records": 1199,
       "path": "data/2026-11-02T11.jsonl"
+    },
+    {
+      "date": "2026-11-02T12",
+      "polls": 9,
+      "vehicle_records": 1464,
+      "path": "data/2026-11-02T12.jsonl"
+    },
+    {
+      "date": "2026-11-02T13",
+      "polls": 8,
+      "vehicle_records": 1359,
+      "path": "data/2026-11-02T13.jsonl"
+    },
+    {
+      "date": "2026-11-02T14",
+      "polls": 8,
+      "vehicle_records": 1211,
+      "path": "data/2026-11-02T14.jsonl"
+    },
+    {
+      "date": "2026-11-02T15",
+      "polls": 8,
+      "vehicle_records": 1117,
+      "path": "data/2026-11-02T15.jsonl"
+    },
+    {
+      "date": "2026-11-02T16",
+      "polls": 7,
+      "vehicle_records": 952,
+      "path": "data/2026-11-02T16.jsonl"
+    },
+    {
+      "date": "2026-11-02T17",
+      "polls": 8,
+      "vehicle_records": 1118,
+      "path": "data/2026-11-02T17.jsonl"
+    },
+    {
+      "date": "2026-11-02T18",
+      "polls": 8,
+      "vehicle_records": 1124,
+      "path": "data/2026-11-02T18.jsonl"
+    },
+    {
+      "date": "2026-11-02T19",
+      "polls": 10,
+      "vehicle_records": 1504,
+      "path": "data/2026-11-02T19.jsonl"
+    },
+    {
+      "date": "2026-11-02T20",
+      "polls": 6,
+      "vehicle_records": 1022,
+      "path": "data/2026-11-02T20.jsonl"
+    },
+    {
+      "date": "2026-11-02T21",
+      "polls": 3,
+      "vehicle_records": 537,
+      "path": "data/2026-11-02T21.jsonl"
     }
   ]
 }

@@ -17,6 +17,18 @@ name: Log telemetry (static feed)
 # same caveat the feed workflow carries. Snapshot timestamps come from
 # the feed file's generated_at, so scheduler sparsity presents as
 # older snapshots in the stream, never as fabricated polls.
+#
+# Cadence update (2026-11-12, LTD VM removal): from 2026-10-15 until
+# today the fine cadence was actually held by the VM dispatch
+# driver's telemetry target, which dispatched this workflow whenever
+# latest.json aged past 420 s. That driver is retired (the whole
+# production path moved into GitHub Actions), and the scheduler
+# alone delivers too sparsely in this account to hold a 5-minute
+# poll (measured ~2.4% of */5 crons, Project 30). The chain job
+# below now holds the cadence the same way the feed chains do:
+# each run dispatches the next after a delay, gated by the
+# TELEMETRY_CHAIN repo variable, with the */5 schedule as the
+# restart floor for a dead chain.
 on:
   schedule:
     - cron: '*/5 * * * *'
@@ -77,3 +89,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run build-timing.yml --ref main
+
+  # Self-dispatch chain (2026-11-12): see the header note. Single
+  # pending slot — if another run is already queued or pending, it
+  # chains onward itself; runs never pile up. Gated by
+  # TELEMETRY_CHAIN (anything but "on" skips).
+  chain:
+    needs: [log]
+    if: always() && vars.TELEMETRY_CHAIN == 'on'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the next telemetry poll
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN_DELAY_SEC: ${{ vars.TELEMETRY_CHAIN_DELAY_SEC }}
+        run: |
+          others=$(gh run list --repo "${{ github.repository }}" \
+            --workflow log-telemetry.yml --limit 15 \
+            --json databaseId,status \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }}) | select(.status == \"queued\" or .status == \"pending\" or .status == \"waiting\" or .status == \"in_progress\")] | length")
+          if [ "${others:-0}" != "0" ]; then
+            echo "chain: $others other run(s) active or queued; the queued run chains onward itself"
+            exit 0
+          fi
+          delay="${CHAIN_DELAY_SEC:-210}"
+          echo "chain: sleeping ${delay}s, then dispatching the next log-telemetry run"
+          sleep "$delay"
+          gh workflow run log-telemetry.yml --repo "${{ github.repository }}" --ref main
